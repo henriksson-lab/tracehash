@@ -1,0 +1,20 @@
+[package]
+name = "tracehash"
+version = "0.1.0"
+edition = "2021"
+description = "Cross-language call/input/output hash tracing for algorithm parity checks"
+license = "BSD-3-Clause"
+
+[features]
+default = ["derive"]
+derive = ["dep:tracehash-derive"]
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "tracehash-compare"
+path = "src/bin/tracehash-compare.rs"
+
+[dependencies]
+tracehash-derive = { path = "tracehash-derive", optional = true }

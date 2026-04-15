@@ -1,0 +1,9 @@
+[package]
+name = "tracehash-derive"
+version = "0.1.0"
+edition = "2021"
+description = "Derive macro for tracehash canonical hashing"
+license = "BSD-3-Clause"
+
+[lib]
+proc-macro = true
