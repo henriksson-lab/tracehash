@@ -1,12 +1,39 @@
-# tracehash
+# tracehash - support for faithful translation of code
 
 `tracehash` is a small cross-language tracing toolkit for algorithm parity
 debugging. It records function calls as stable hashes of canonicalized inputs
 and outputs, so two implementations can be compared without storing large or
 sensitive payloads.
 
-The first target is Rust-vs-C HMMER debugging, but the crate is intended to be
-usable as a standalone package.
+The code has been used to successfully find bugs. While Claude/Codex can be surprisingly good at reasoning, the LLM
+is not yet at a point where it can be trusted for faithful translation. By comparing call frequency, and inputs vs outputs,
+complicated bugs can be tracked down without complicated reasoning. This reduces cost and speeds up LLM-mediated translation.
+
+This software assumes that translation is performed function-by-function (as far as possible), enabling 1-to-1 comparison.
+It also assumes that functions are pure: one input gives one output. Other functions cannot be traced and writing such functions
+should generally be considered poor practice (untestable code).
+
+The idea behind this code is simple: If we logged all inputs and outputs, this would take too much space. Here, we simply
+log the small hashes of inputs and outputs. If they differ, LLM can focus its attention on the most likely source of the problem.
+
+
+**This crate is heavily work-in-progress**
+
+## How to use
+
+Simply ask your LLM of choice to look at this Github repository and suggest to use it for tracking problems. This appears enough
+
+In the future, this suite will be expanded for aggressive up-front instrumentation, along with transpilers that can translate as
+much code as possible, faithfully, function-by-function, with minimum LLM use.
+
+
+## On the use of LLM and license
+
+This code was generated using LLM, with the intent of being used by LLM. It might be useful for manual
+testing but the focus is to aid faithful translation using LLM.
+
+This code was developed without a reference. It may contain copyrighted code but no such analysis has been performed.
+Based on current knowledge, the code can be considered MIT licensed but this remains to be validated.
 
 ## What It Records
 
