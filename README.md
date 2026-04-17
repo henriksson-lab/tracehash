@@ -32,7 +32,7 @@ much code as possible, faithfully, function-by-function, with minimum LLM use.
 This code was generated using LLM, with the intent of being used by LLM. It might be useful for manual
 testing but the focus is to aid faithful translation using LLM.
 
-This code is released under the MIT license (see `LICENSE`). It was developed without a reference and no
+This code is released under the MIT license (see `LICENSE`) - But it was developed without a reference and no
 copyright audit has been performed on the LLM-generated portions.
 
 ## What It Records
