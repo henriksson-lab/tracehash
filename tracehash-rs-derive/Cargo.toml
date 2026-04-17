@@ -9,6 +9,11 @@ repository = "https://github.com/henriksson-lab/tracehash"
 readme = "../README.md"
 keywords = ["tracing", "hash", "parity", "debugging", "macro"]
 categories = ["development-tools::debugging", "development-tools::procedural-macro-helpers"]
+include = [
+    "src/**/*",
+    "Cargo.toml",
+    "LICENSE",
+]
 
 [lib]
 proc-macro = true

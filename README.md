@@ -85,7 +85,7 @@ Add the crate as an optional dependency while instrumenting a project:
 tracehash-rs = { version = "0.1", optional = true }
 
 [features]
-tracehash = ["dep:tracehash"]
+tracehash = ["dep:tracehash-rs"]
 ```
 
 Instrument a function behind the feature:
@@ -298,25 +298,27 @@ TRACEHASH_OUT=/tmp/c.tsv TRACEHASH_SIDE=c TRACEHASH_RUN_ID=case1 \
 
 ## Compare Traces
 
+Install the comparator once:
+
+```sh
+cargo install tracehash-rs
+```
+
 Run the comparator:
 
 ```sh
-cargo run --manifest-path tracehash/Cargo.toml --bin tracehash-compare -- \
-  /tmp/rust.tsv /tmp/c.tsv
+tracehash-compare /tmp/rust.tsv /tmp/c.tsv
 ```
 
 Useful filters:
 
 ```sh
-cargo run --manifest-path tracehash/Cargo.toml --bin tracehash-compare -- \
-  --only score_domain_forward,score_domain_null2 --first 50 \
+tracehash-compare --only score_domain_forward,score_domain_null2 --first 50 \
   /tmp/rust.tsv /tmp/c.tsv
 
-cargo run --manifest-path tracehash/Cargo.toml --bin tracehash-compare -- \
-  --skip oprofile_xf_bits /tmp/rust.tsv /tmp/c.tsv
+tracehash-compare --skip oprofile_xf_bits /tmp/rust.tsv /tmp/c.tsv
 
-cargo run --manifest-path tracehash/Cargo.toml --bin tracehash-compare -- \
-  --left-label rust --right-label c --summary-only \
+tracehash-compare --left-label rust --right-label c --summary-only \
   /tmp/rust.tsv /tmp/c.tsv
 ```
 
@@ -436,7 +438,7 @@ instrumentation-mode artifacts in extremely sensitive float paths.
 Compare:
 
 ```sh
-cargo run --manifest-path tracehash/Cargo.toml --bin tracehash-compare -- \
+tracehash-compare \
   target/tracehash-runs/ref.rust.tsv target/tracehash-runs/ref.c.tsv
 ```
 

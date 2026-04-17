@@ -9,6 +9,14 @@ repository = "https://github.com/henriksson-lab/tracehash"
 readme = "README.md"
 keywords = ["tracing", "hash", "parity", "debugging", "ffi"]
 categories = ["development-tools::debugging", "development-tools::testing"]
+include = [
+    "src/**/*",
+    "tests/**/*",
+    "c/**/*",
+    "Cargo.toml",
+    "README.md",
+    "LICENSE",
+]
 
 [features]
 default = ["derive"]
