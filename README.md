@@ -32,8 +32,8 @@ much code as possible, faithfully, function-by-function, with minimum LLM use.
 This code was generated using LLM, with the intent of being used by LLM. It might be useful for manual
 testing but the focus is to aid faithful translation using LLM.
 
-This code was developed without a reference. It may contain copyrighted code but no such analysis has been performed.
-Based on current knowledge, the code can be considered MIT licensed but this remains to be validated.
+This code is released under the MIT license (see `LICENSE`). It was developed without a reference and no
+copyright audit has been performed on the LLM-generated portions.
 
 ## What It Records
 
@@ -42,6 +42,11 @@ Each trace row is tab-separated:
 ```text
 run_id side thread_id seq function input_hash output_hash input_len output_len elapsed_ns file line
 ```
+
+When `TRACEHASH_VALUES=1` is set, rows get one additional debug column with
+primitive input/output values and byte-slice summaries. This is intended for
+local diagnosis after a hash mismatch has been localized; the default remains
+hash-only.
 
 The important comparison key is:
 
@@ -60,7 +65,9 @@ Only hash canonical data that means the same thing in both languages:
 - Use little-endian integer encodings.
 - Hash floating-point values by raw IEEE-754 bits when checking bitwise parity.
 - Use quantized float helpers when you need to distinguish tiny numeric drift
-  from meaningful algorithmic differences.
+  from meaningful algorithmic differences. Rust and C quantization use the same
+  `float` divide, add/subtract `0.5f`, then truncate rule so quantized hashes are
+  comparable across both sides.
 - Hash slices with an explicit length before bytes.
 - Do not hash pointer addresses, allocation capacities, struct padding, or map
   iteration order.
@@ -75,7 +82,7 @@ Add the crate as an optional dependency while instrumenting a project:
 
 ```toml
 [dependencies]
-tracehash = { path = "tracehash", optional = true }
+tracehash-rs = { version = "0.1", optional = true }
 
 [features]
 tracehash = ["dep:tracehash"]
@@ -107,6 +114,10 @@ TRACEHASH_OUT=/tmp/rust.tsv TRACEHASH_SIDE=rust TRACEHASH_RUN_ID=case1 \
 ```
 
 If `TRACEHASH_OUT` is not set, tracing is effectively disabled.
+Set `TRACEHASH_VALUES=1` when you need readable scalar values for a narrow
+probe or when a project-specific parity workflow says to keep both sides in
+that mode. Byte slices are still summarized as `len:hash`, not emitted
+verbatim.
 
 ### Deriving Stable Rust Hashes
 
@@ -145,6 +156,22 @@ struct PipelineDecision {
 field names. This is useful for Rust-side breadth and consistency. For
 Rust-vs-C parity, the C probe must emit fields in the same canonical order and
 with the same primitive encodings.
+
+For lighter ad hoc probes, use named scalar fields. These are useful when you
+do not want to define a full struct but still want the hash to say what each
+scalar means:
+
+```rust
+#[cfg(feature = "tracehash")]
+{
+    let mut th = tracehash::th_call!("pipeline_msv_decision");
+    th.input_field("seq_len", &seq_len);
+    th.input_field("model_len", &model_len);
+    th.output_field("score", &score);
+    th.output_field("passed", &passed);
+    th.finish();
+}
+```
 
 Rust `derive` macros apply to data types, not function bodies. A future
 `#[tracehash::trace]` attribute macro could wrap simple functions automatically,
@@ -224,6 +251,18 @@ TH_DEFINE_STRUCT_HASH(PipelineDecision, PIPELINE_DECISION_FIELDS)
 name and field names are included in the hash, matching Rust derive behavior.
 The helper currently expects a simple C identifier as the type name.
 
+For lighter ad hoc probes, use the named scalar field macros. The field names
+and primitive encodings match Rust `input_field()` / `output_field()`:
+
+```c
+TH_CALL("pipeline_msv_decision");
+TH_IN_FIELD_U64("seq_len", seq_len);
+TH_IN_FIELD_U64("model_len", model_len);
+TH_OUT_FIELD_F32("score", score);
+TH_OUT_FIELD_BOOL("passed", passed);
+TH_FINISH();
+```
+
 ## C++ Usage
 
 For C++, include `tracehash_cpp.hpp` to use an RAII wrapper around the C API:
@@ -266,9 +305,25 @@ cargo run --manifest-path tracehash/Cargo.toml --bin tracehash-compare -- \
   /tmp/rust.tsv /tmp/c.tsv
 ```
 
+Useful filters:
+
+```sh
+cargo run --manifest-path tracehash/Cargo.toml --bin tracehash-compare -- \
+  --only score_domain_forward,score_domain_null2 --first 50 \
+  /tmp/rust.tsv /tmp/c.tsv
+
+cargo run --manifest-path tracehash/Cargo.toml --bin tracehash-compare -- \
+  --skip oprofile_xf_bits /tmp/rust.tsv /tmp/c.tsv
+
+cargo run --manifest-path tracehash/Cargo.toml --bin tracehash-compare -- \
+  --left-label rust --right-label c --summary-only \
+  /tmp/rust.tsv /tmp/c.tsv
+```
+
 The comparator reports:
 
 - Per-function call count differences.
+- First occurrence-level differences by `function + input_hash + occurrence`.
 - Inputs present on one side but not the other.
 - Same-input output mismatches.
 - Pair-difference totals grouped by function.
@@ -285,6 +340,10 @@ pair differences by function:
 
 This means both sides reached `domain_decoding_summary` for the same inputs, but
 the hashed outputs differ. Later call-count differences are probably downstream.
+Use `--only` to focus on the earliest suspicious probe family and `--first N`
+to print more occurrence-level mismatches, including the debug value column when
+the trace was produced with `TRACEHASH_VALUES=1`. Use `--summary-only` for very
+large traces when you only need counts and grouped totals.
 
 ## Agent Handoff Checklist
 
@@ -305,7 +364,8 @@ first. Most bad comparisons come from under-specified input hashes.
    different sequences can share those values.
 6. Prefer paired raw and quantized float outputs while debugging. Raw output
    proves bitwise parity; quantized output shows whether a mismatch is tiny
-   numeric drift or a larger algorithmic difference.
+   numeric drift or a larger algorithmic difference. If the raw float bits match
+   but a quantized helper differs, treat it as a tracehash bug.
 7. Start with high-level summary probes, then add row/branch/state probes only
    around the first mismatching function.
 8. Rebuild C without `TRACEHASH` before timing or normal correctness runs.
@@ -343,34 +403,68 @@ Build an instrumented C `hmmsearch`:
 tracehash/scripts/build-c-hmmsearch.sh
 ```
 
+The helper rebuilds each C object that currently contains `TRACEHASH` probes,
+including the hot SIMD Forward/Backward object
+`hmmer/src/impl_sse/fwdback.o` and SIMD posterior-decoding object
+`hmmer/src/impl_sse/decoding.o`. It also rebuilds the SIMD optimized-profile
+object, `hmmer/src/impl_sse/p7_oprofile.o`, for profile table parity probes.
+Generic profile configuration probes rebuild `hmmer/src/modelconfig.o`.
+When adding probes to another C object, update the helper in the same change so
+comparisons do not silently miss that trace surface.
+
 Run the same search on both sides:
 
 ```sh
-TRACEHASH_OUT=/tmp/rust_tracehash.tsv TRACEHASH_SIDE=rust \
+TRACEHASH_OUT=target/tracehash-runs/ref.rust.tsv TRACEHASH_SIDE=rust TRACEHASH_VALUES=1 \
   target/release/hmmer search --noali \
-  --tblout /tmp/rust.tbl --domtblout /tmp/rust.domtbl \
+  --tblout target/tracehash-runs/ref.rust.tbl --domtblout target/tracehash-runs/ref.rust.domtbl \
   test_data/Pkinase_pfam.hmm test_data/human_swissprot_2k.fasta \
-  >/tmp/rust.out
+  >target/tracehash-runs/ref.rust.out
 
-TRACEHASH_OUT=/tmp/c_tracehash.tsv TRACEHASH_SIDE=c \
+TRACEHASH_OUT=target/tracehash-runs/ref.c.tsv TRACEHASH_SIDE=c TRACEHASH_VALUES=1 \
   hmmer/src/hmmsearch --noali \
-  --tblout /tmp/c.tbl --domtblout /tmp/c.domtbl \
+  --tblout target/tracehash-runs/ref.c.tbl --domtblout target/tracehash-runs/ref.c.domtbl \
   test_data/Pkinase_pfam.hmm test_data/human_swissprot_2k.fasta \
-  >/tmp/c.out
+  >target/tracehash-runs/ref.c.out
 ```
+
+Use the same `TRACEHASH_VALUES` setting on both sides for bitwise HMMER
+diagnostics. The extra value column is not part of the comparison key, but
+keeping the runtime instrumentation mode identical avoids chasing
+instrumentation-mode artifacts in extremely sensitive float paths.
 
 Compare:
 
 ```sh
 cargo run --manifest-path tracehash/Cargo.toml --bin tracehash-compare -- \
-  /tmp/rust_tracehash.tsv /tmp/c_tracehash.tsv
+  target/tracehash-runs/ref.rust.tsv target/tracehash-runs/ref.c.tsv
+```
+
+The full reference workflow is also available as one script:
+
+```sh
+tracehash/scripts/run-hmmer-reference.sh
+```
+
+It builds Rust with `--features tracehash`, builds C `hmmsearch` with
+`TRACEHASH`, runs the Pkinase reference search on both sides with
+`TRACEHASH_VALUES=1`, prints trace summaries and parsed `tblout` parity, then
+rebuilds C without `TRACEHASH` before exiting. By default, large trace files
+are written under `target/tracehash-runs` inside the repository. Override paths
+with environment variables when needed:
+
+```sh
+TRACEHASH_WORKDIR=target/tracehash-runs PREFIX=target/tracehash-runs/my_case \
+  HMM=path/to/model.hmm SEQS=path/to/seqs.fa \
+  tracehash/scripts/run-hmmer-reference.sh
 ```
 
 After an instrumented C run, rebuild C normally if you want to remove linked
 trace symbols:
 
 ```sh
-make -B -C hmmer/src p7_domaindef.o p7_pipeline.o CPPFLAGS=
+make -B -C hmmer/src/impl_sse fwdback.o decoding.o p7_oprofile.o CPPFLAGS=
+make -B -C hmmer/src modelconfig.o p7_domaindef.o p7_pipeline.o CPPFLAGS=
 make -C hmmer/src libhmmer.a hmmsearch
 ```
 
@@ -403,8 +497,9 @@ Good examples of identity fields:
   whether `TRACEHASH_OUT` is set.
 - The C macro currently uses a fixed local variable name; repeated probes in one
   C block need explicit scopes.
-- Thread order is not stable. Comparisons should use function/input/output sets,
-  not global row order.
+- Thread order is not globally stable. The comparator does not compare global
+  row order; its occurrence-level report is intended for deterministic single
+  thread runs or for probes whose same-input occurrence order is meaningful.
 
 ## Release Roadmap
 

@@ -1,0 +1,14 @@
+[package]
+name = "tracehash-rs-derive"
+version = "0.1.0"
+edition = "2021"
+authors = ["Johan Henriksson <johan.henriksson@umu.se>"]
+description = "Derive macro for the tracehash-rs canonical hashing trait"
+license = "MIT"
+repository = "https://github.com/henriksson-lab/tracehash"
+readme = "../README.md"
+keywords = ["tracing", "hash", "parity", "debugging", "macro"]
+categories = ["development-tools::debugging", "development-tools::procedural-macro-helpers"]
+
+[lib]
+proc-macro = true

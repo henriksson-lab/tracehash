@@ -1,15 +1,21 @@
 [package]
-name = "tracehash"
+name = "tracehash-rs"
 version = "0.1.0"
 edition = "2021"
+authors = ["Johan Henriksson <johan.henriksson@umu.se>"]
 description = "Cross-language call/input/output hash tracing for algorithm parity checks"
-license = "BSD-3-Clause"
+license = "MIT"
+repository = "https://github.com/henriksson-lab/tracehash"
+readme = "README.md"
+keywords = ["tracing", "hash", "parity", "debugging", "ffi"]
+categories = ["development-tools::debugging", "development-tools::testing"]
 
 [features]
 default = ["derive"]
-derive = ["dep:tracehash-derive"]
+derive = ["dep:tracehash-rs-derive"]
 
 [lib]
+name = "tracehash"
 path = "src/lib.rs"
 
 [[bin]]
@@ -17,4 +23,4 @@ name = "tracehash-compare"
 path = "src/bin/tracehash-compare.rs"
 
 [dependencies]
-tracehash-derive = { path = "tracehash-derive", optional = true }
+tracehash-rs-derive = { version = "0.1.0", path = "tracehash-rs-derive", optional = true }

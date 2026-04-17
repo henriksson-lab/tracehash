@@ -17,6 +17,10 @@ typedef struct TraceHashCall {
   uint64_t input_len;
   uint64_t output_len;
   uint64_t start_ns;
+  char *values;
+  size_t values_len;
+  size_t values_cap;
+  int values_enabled;
   int active;
 } TraceHashCall;
 
@@ -35,6 +39,16 @@ void tracehash_output_f32(TraceHashCall *call, float value);
 void tracehash_output_f64(TraceHashCall *call, double value);
 void tracehash_output_f32_quant(TraceHashCall *call, float value, float quantum);
 void tracehash_output_bytes(TraceHashCall *call, const void *ptr, size_t len);
+void tracehash_input_field_u64(TraceHashCall *call, const char *field, uint64_t value);
+void tracehash_input_field_i64(TraceHashCall *call, const char *field, int64_t value);
+void tracehash_input_field_bool(TraceHashCall *call, const char *field, int value);
+void tracehash_input_field_f32(TraceHashCall *call, const char *field, float value);
+void tracehash_input_field_f64(TraceHashCall *call, const char *field, double value);
+void tracehash_output_field_u64(TraceHashCall *call, const char *field, uint64_t value);
+void tracehash_output_field_i64(TraceHashCall *call, const char *field, int64_t value);
+void tracehash_output_field_bool(TraceHashCall *call, const char *field, int value);
+void tracehash_output_field_f32(TraceHashCall *call, const char *field, float value);
+void tracehash_output_field_f64(TraceHashCall *call, const char *field, double value);
 void tracehash_input_struct_begin(TraceHashCall *call, const char *name);
 void tracehash_output_struct_begin(TraceHashCall *call, const char *name);
 void tracehash_input_struct_field_u64(TraceHashCall *call, const char *field, uint64_t value);
@@ -71,6 +85,16 @@ void tracehash_finish(TraceHashCall *call);
 #define TH_OUT_F64_TO(call, value) tracehash_output_f64((call), (double)(value))
 #define TH_OUT_F32_Q_TO(call, value, quantum) tracehash_output_f32_quant((call), (float)(value), (float)(quantum))
 #define TH_OUT_BYTES_TO(call, ptr, len) tracehash_output_bytes((call), (ptr), (len))
+#define TH_IN_FIELD_U64_TO(call, field, value) tracehash_input_field_u64((call), (field), (uint64_t)(value))
+#define TH_IN_FIELD_I64_TO(call, field, value) tracehash_input_field_i64((call), (field), (int64_t)(value))
+#define TH_IN_FIELD_BOOL_TO(call, field, value) tracehash_input_field_bool((call), (field), (value))
+#define TH_IN_FIELD_F32_TO(call, field, value) tracehash_input_field_f32((call), (field), (float)(value))
+#define TH_IN_FIELD_F64_TO(call, field, value) tracehash_input_field_f64((call), (field), (double)(value))
+#define TH_OUT_FIELD_U64_TO(call, field, value) tracehash_output_field_u64((call), (field), (uint64_t)(value))
+#define TH_OUT_FIELD_I64_TO(call, field, value) tracehash_output_field_i64((call), (field), (int64_t)(value))
+#define TH_OUT_FIELD_BOOL_TO(call, field, value) tracehash_output_field_bool((call), (field), (value))
+#define TH_OUT_FIELD_F32_TO(call, field, value) tracehash_output_field_f32((call), (field), (float)(value))
+#define TH_OUT_FIELD_F64_TO(call, field, value) tracehash_output_field_f64((call), (field), (double)(value))
 #define TH_FINISH_TO(call) tracehash_finish((call))
 
 #define TH_IN_U64(value) TH_IN_U64_TO(&th_call, value)
@@ -87,6 +111,16 @@ void tracehash_finish(TraceHashCall *call);
 #define TH_OUT_F64(value) TH_OUT_F64_TO(&th_call, value)
 #define TH_OUT_F32_Q(value, quantum) TH_OUT_F32_Q_TO(&th_call, value, quantum)
 #define TH_OUT_BYTES(ptr, len) TH_OUT_BYTES_TO(&th_call, ptr, len)
+#define TH_IN_FIELD_U64(field, value) TH_IN_FIELD_U64_TO(&th_call, field, value)
+#define TH_IN_FIELD_I64(field, value) TH_IN_FIELD_I64_TO(&th_call, field, value)
+#define TH_IN_FIELD_BOOL(field, value) TH_IN_FIELD_BOOL_TO(&th_call, field, value)
+#define TH_IN_FIELD_F32(field, value) TH_IN_FIELD_F32_TO(&th_call, field, value)
+#define TH_IN_FIELD_F64(field, value) TH_IN_FIELD_F64_TO(&th_call, field, value)
+#define TH_OUT_FIELD_U64(field, value) TH_OUT_FIELD_U64_TO(&th_call, field, value)
+#define TH_OUT_FIELD_I64(field, value) TH_OUT_FIELD_I64_TO(&th_call, field, value)
+#define TH_OUT_FIELD_BOOL(field, value) TH_OUT_FIELD_BOOL_TO(&th_call, field, value)
+#define TH_OUT_FIELD_F32(field, value) TH_OUT_FIELD_F32_TO(&th_call, field, value)
+#define TH_OUT_FIELD_F64(field, value) TH_OUT_FIELD_F64_TO(&th_call, field, value)
 #define TH_FINISH() TH_FINISH_TO(&th_call)
 
 #define TH_FIELD_IN_U64(call, value, field) tracehash_input_struct_field_u64((call), #field, (uint64_t)((value)->field));

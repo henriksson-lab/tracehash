@@ -6,6 +6,7 @@
 
 #include <pthread.h>
 #include <math.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -20,6 +21,7 @@ static const char *tracehash_run_id = "default";
 static pthread_mutex_t tracehash_mutex = PTHREAD_MUTEX_INITIALIZER;
 static uint64_t tracehash_seq = 0;
 static int tracehash_initialized = 0;
+static int tracehash_values = 0;
 
 static void hash_u8(uint64_t *hash, uint8_t value) {
   *hash ^= value;
@@ -69,6 +71,45 @@ static void hash_str(uint64_t *hash, const char *value) {
   size_t len = strlen(value);
   hash_u64(hash, (uint64_t)len);
   hash_bytes(hash, (const uint8_t *)value, len);
+}
+
+static void tracehash_append_value(TraceHashCall *call, const char *fmt, ...) {
+  va_list ap;
+  va_list ap2;
+  int needed;
+  size_t prefix;
+  if (!call->active || !call->values_enabled) return;
+
+  prefix = call->values_len == 0 ? 0 : 1;
+  va_start(ap, fmt);
+  va_copy(ap2, ap);
+  needed = vsnprintf(NULL, 0, fmt, ap);
+  va_end(ap);
+  if (needed < 0) {
+    va_end(ap2);
+    return;
+  }
+  if (call->values_len + prefix + (size_t)needed + 1 > call->values_cap) {
+    size_t new_cap = call->values_cap == 0 ? 128 : call->values_cap;
+    char *new_values;
+    while (call->values_len + prefix + (size_t)needed + 1 > new_cap) new_cap *= 2;
+    new_values = (char *)realloc(call->values, new_cap);
+    if (new_values == NULL) {
+      free(call->values);
+      call->values = NULL;
+      call->values_len = 0;
+      call->values_cap = 0;
+      call->values_enabled = 0;
+      va_end(ap2);
+      return;
+    }
+    call->values = new_values;
+    call->values_cap = new_cap;
+  }
+  if (prefix) call->values[call->values_len++] = ';';
+  vsnprintf(call->values + call->values_len, call->values_cap - call->values_len, fmt, ap2);
+  va_end(ap2);
+  call->values_len += (size_t)needed;
 }
 
 static void hash_trace_u64(uint64_t *hash, uint64_t value) {
@@ -129,6 +170,10 @@ static void tracehash_init(void) {
   tracehash_file = fopen(out, "w");
   if (getenv("TRACEHASH_SIDE") != NULL) tracehash_side = getenv("TRACEHASH_SIDE");
   if (getenv("TRACEHASH_RUN_ID") != NULL) tracehash_run_id = getenv("TRACEHASH_RUN_ID");
+  if (getenv("TRACEHASH_VALUES") != NULL &&
+      getenv("TRACEHASH_VALUES")[0] != '\0' &&
+      strcmp(getenv("TRACEHASH_VALUES"), "0") != 0)
+    tracehash_values = 1;
 }
 
 TraceHashCall tracehash_begin(const char *function, const char *file, int line) {
@@ -145,6 +190,10 @@ TraceHashCall tracehash_begin(const char *function, const char *file, int line) 
   call.input_len = 0;
   call.output_len = 0;
   call.start_ns = now_ns();
+  call.values = NULL;
+  call.values_len = 0;
+  call.values_cap = 0;
+  call.values_enabled = tracehash_values;
   call.active = tracehash_file != NULL;
   if (call.active) {
     hash_str(&call.input_hash, function);
@@ -157,6 +206,7 @@ void tracehash_input_u64(TraceHashCall *call, uint64_t value) {
   if (!call->active) return;
   hash_trace_u64(&call->input_hash, value);
   call->input_len++;
+  tracehash_append_value(call, "IU64=%lu", (unsigned long)value);
 }
 
 void tracehash_input_i64(TraceHashCall *call, int64_t value) {
@@ -167,18 +217,25 @@ void tracehash_input_bool(TraceHashCall *call, int value) {
   if (!call->active) return;
   hash_trace_bool(&call->input_hash, value);
   call->input_len++;
+  tracehash_append_value(call, "IBOOL=%d", value ? 1 : 0);
 }
 
 void tracehash_input_f32(TraceHashCall *call, float value) {
   if (!call->active) return;
   hash_trace_f32(&call->input_hash, value);
   call->input_len++;
+  {
+    union { float f; uint32_t u; } bits;
+    bits.f = value;
+    tracehash_append_value(call, "IF32=%08x/%.9e", bits.u, value);
+  }
 }
 
 void tracehash_input_f64(TraceHashCall *call, double value) {
   if (!call->active) return;
   hash_trace_f64(&call->input_hash, value);
   call->input_len++;
+  tracehash_append_value(call, "IF64=%.17e", value);
 }
 
 void tracehash_input_f32_quant(TraceHashCall *call, float value, float quantum) {
@@ -194,18 +251,25 @@ void tracehash_input_f32_quant(TraceHashCall *call, float value, float quantum) 
   hash_u32(&call->input_hash, qbits.u);
   hash_u64(&call->input_hash, (uint64_t)q);
   call->input_len++;
+  tracehash_append_value(call, "IF32Q=%08x/%ld", qbits.u, (long)q);
 }
 
 void tracehash_input_bytes(TraceHashCall *call, const void *ptr, size_t len) {
   if (!call->active) return;
   hash_trace_bytes(&call->input_hash, ptr, len);
   call->input_len += (uint64_t)len;
+  {
+    uint64_t bytes_hash = FNV_OFFSET;
+    hash_bytes(&bytes_hash, (const uint8_t *)ptr, len);
+    tracehash_append_value(call, "IBYTES=%lu:%016lx", (unsigned long)len, (unsigned long)bytes_hash);
+  }
 }
 
 void tracehash_output_u64(TraceHashCall *call, uint64_t value) {
   if (!call->active) return;
   hash_trace_u64(&call->output_hash, value);
   call->output_len++;
+  tracehash_append_value(call, "OU64=%lu", (unsigned long)value);
 }
 
 void tracehash_output_i64(TraceHashCall *call, int64_t value) {
@@ -216,18 +280,25 @@ void tracehash_output_bool(TraceHashCall *call, int value) {
   if (!call->active) return;
   hash_trace_bool(&call->output_hash, value);
   call->output_len++;
+  tracehash_append_value(call, "OBOOL=%d", value ? 1 : 0);
 }
 
 void tracehash_output_f32(TraceHashCall *call, float value) {
   if (!call->active) return;
   hash_trace_f32(&call->output_hash, value);
   call->output_len++;
+  {
+    union { float f; uint32_t u; } bits;
+    bits.f = value;
+    tracehash_append_value(call, "OF32=%08x/%.9e", bits.u, value);
+  }
 }
 
 void tracehash_output_f64(TraceHashCall *call, double value) {
   if (!call->active) return;
   hash_trace_f64(&call->output_hash, value);
   call->output_len++;
+  tracehash_append_value(call, "OF64=%.17e", value);
 }
 
 void tracehash_output_f32_quant(TraceHashCall *call, float value, float quantum) {
@@ -243,12 +314,95 @@ void tracehash_output_f32_quant(TraceHashCall *call, float value, float quantum)
   hash_u32(&call->output_hash, qbits.u);
   hash_u64(&call->output_hash, (uint64_t)q);
   call->output_len++;
+  tracehash_append_value(call, "OF32Q=%08x/%ld", qbits.u, (long)q);
 }
 
 void tracehash_output_bytes(TraceHashCall *call, const void *ptr, size_t len) {
   if (!call->active) return;
   hash_trace_bytes(&call->output_hash, ptr, len);
   call->output_len += (uint64_t)len;
+  {
+    uint64_t bytes_hash = FNV_OFFSET;
+    hash_bytes(&bytes_hash, (const uint8_t *)ptr, len);
+    tracehash_append_value(call, "OBYTES=%lu:%016lx", (unsigned long)len, (unsigned long)bytes_hash);
+  }
+}
+
+static void hash_field_prefix(uint64_t *hash, const char *field) {
+  hash_u8(hash, 'G');
+  hash_str(hash, field);
+}
+
+void tracehash_input_field_u64(TraceHashCall *call, const char *field, uint64_t value) {
+  if (!call->active) return;
+  hash_field_prefix(&call->input_hash, field);
+  hash_trace_u64(&call->input_hash, value);
+  call->input_len++;
+  tracehash_append_value(call, "IFIELD=%s", field);
+}
+
+void tracehash_input_field_i64(TraceHashCall *call, const char *field, int64_t value) {
+  tracehash_input_field_u64(call, field, (uint64_t)value);
+}
+
+void tracehash_input_field_bool(TraceHashCall *call, const char *field, int value) {
+  if (!call->active) return;
+  hash_field_prefix(&call->input_hash, field);
+  hash_trace_bool(&call->input_hash, value);
+  call->input_len++;
+  tracehash_append_value(call, "IFIELD=%s", field);
+}
+
+void tracehash_input_field_f32(TraceHashCall *call, const char *field, float value) {
+  if (!call->active) return;
+  hash_field_prefix(&call->input_hash, field);
+  hash_trace_f32(&call->input_hash, value);
+  call->input_len++;
+  tracehash_append_value(call, "IFIELD=%s", field);
+}
+
+void tracehash_input_field_f64(TraceHashCall *call, const char *field, double value) {
+  if (!call->active) return;
+  hash_field_prefix(&call->input_hash, field);
+  hash_trace_f64(&call->input_hash, value);
+  call->input_len++;
+  tracehash_append_value(call, "IFIELD=%s", field);
+}
+
+void tracehash_output_field_u64(TraceHashCall *call, const char *field, uint64_t value) {
+  if (!call->active) return;
+  hash_field_prefix(&call->output_hash, field);
+  hash_trace_u64(&call->output_hash, value);
+  call->output_len++;
+  tracehash_append_value(call, "OFIELD=%s", field);
+}
+
+void tracehash_output_field_i64(TraceHashCall *call, const char *field, int64_t value) {
+  tracehash_output_field_u64(call, field, (uint64_t)value);
+}
+
+void tracehash_output_field_bool(TraceHashCall *call, const char *field, int value) {
+  if (!call->active) return;
+  hash_field_prefix(&call->output_hash, field);
+  hash_trace_bool(&call->output_hash, value);
+  call->output_len++;
+  tracehash_append_value(call, "OFIELD=%s", field);
+}
+
+void tracehash_output_field_f32(TraceHashCall *call, const char *field, float value) {
+  if (!call->active) return;
+  hash_field_prefix(&call->output_hash, field);
+  hash_trace_f32(&call->output_hash, value);
+  call->output_len++;
+  tracehash_append_value(call, "OFIELD=%s", field);
+}
+
+void tracehash_output_field_f64(TraceHashCall *call, const char *field, double value) {
+  if (!call->active) return;
+  hash_field_prefix(&call->output_hash, field);
+  hash_trace_f64(&call->output_hash, value);
+  call->output_len++;
+  tracehash_append_value(call, "OFIELD=%s", field);
 }
 
 void tracehash_input_struct_begin(TraceHashCall *call, const char *name) {
@@ -340,7 +494,7 @@ void tracehash_finish(TraceHashCall *call) {
   pthread_mutex_lock(&tracehash_mutex);
   seq = tracehash_seq++;
   fprintf(tracehash_file,
-          "%s\t%s\t%lu\t%lu\t%s\t%016lx\t%016lx\t%lu\t%lu\t%lu\t%s\t%d\n",
+          "%s\t%s\t%lu\t%lu\t%s\t%016lx\t%016lx\t%lu\t%lu\t%lu\t%s\t%d",
           tracehash_run_id,
           tracehash_side,
           (unsigned long)pthread_self(),
@@ -353,6 +507,9 @@ void tracehash_finish(TraceHashCall *call) {
           (unsigned long)elapsed,
           call->file,
           call->line);
+  if (call->values_enabled) fprintf(tracehash_file, "\t%s", call->values != NULL ? call->values : "");
+  fputc('\n', tracehash_file);
   fflush(tracehash_file);
   pthread_mutex_unlock(&tracehash_mutex);
+  free(call->values);
 }

@@ -3,6 +3,7 @@
 //! Set `TRACEHASH_OUT=/path/to/run.tsv` to enable recording. Optional
 //! `TRACEHASH_SIDE` and `TRACEHASH_RUN_ID` values are copied into each row.
 
+use std::fmt::Write as _;
 use std::fs::File;
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -13,7 +14,7 @@ mod stable_hash;
 
 pub use stable_hash::Fnv64;
 #[cfg(feature = "derive")]
-pub use tracehash_derive::TraceHash;
+pub use tracehash_rs_derive::TraceHash;
 
 static WRITER: OnceLock<Mutex<Option<TraceWriter>>> = OnceLock::new();
 static SEQ: AtomicU64 = AtomicU64::new(0);
@@ -22,6 +23,7 @@ struct TraceWriter {
     file: File,
     side: String,
     run_id: String,
+    values: bool,
 }
 
 fn writer() -> &'static Mutex<Option<TraceWriter>> {
@@ -33,7 +35,15 @@ fn writer() -> &'static Mutex<Option<TraceWriter>> {
         let file = File::create(out).ok();
         let side = std::env::var("TRACEHASH_SIDE").unwrap_or_else(|_| "rust".to_string());
         let run_id = std::env::var("TRACEHASH_RUN_ID").unwrap_or_else(|_| "default".to_string());
-        Mutex::new(file.map(|file| TraceWriter { file, side, run_id }))
+        let values = std::env::var("TRACEHASH_VALUES")
+            .map(|value| !value.is_empty() && value != "0")
+            .unwrap_or(false);
+        Mutex::new(file.map(|file| TraceWriter {
+            file,
+            side,
+            run_id,
+            values,
+        }))
     })
 }
 
@@ -42,6 +52,13 @@ pub fn enabled() -> bool {
     writer()
         .lock()
         .map(|guard| guard.is_some())
+        .unwrap_or(false)
+}
+
+fn values_enabled() -> bool {
+    writer()
+        .lock()
+        .map(|guard| guard.as_ref().map(|writer| writer.values).unwrap_or(false))
         .unwrap_or(false)
 }
 
@@ -55,6 +72,7 @@ pub struct Call {
     output_len: u64,
     start: Instant,
     active: bool,
+    values: Option<String>,
 }
 
 impl Call {
@@ -77,6 +95,21 @@ impl Call {
             output_len: 0,
             start: Instant::now(),
             active,
+            values: if active && values_enabled() {
+                Some(String::new())
+            } else {
+                None
+            },
+        }
+    }
+
+    #[inline]
+    fn push_value(&mut self, label: &str, value: impl std::fmt::Display) {
+        if let Some(values) = self.values.as_mut() {
+            if !values.is_empty() {
+                values.push(';');
+            }
+            let _ = write!(values, "{label}={value}");
         }
     }
 
@@ -86,6 +119,7 @@ impl Call {
             self.input.u8(b'U');
             self.input.u64(value);
             self.input_len += 1;
+            self.push_value("IU64", value);
         }
     }
 
@@ -105,6 +139,7 @@ impl Call {
             self.input.u8(b'B');
             self.input.u8(value as u8);
             self.input_len += 1;
+            self.push_value("IBOOL", value as u8);
         }
     }
 
@@ -114,6 +149,10 @@ impl Call {
             self.input.u8(b'F');
             self.input.u32(value.to_bits());
             self.input_len += 1;
+            self.push_value(
+                "IF32",
+                format_args!("{:08x}/{:.9e}", value.to_bits(), value),
+            );
         }
     }
 
@@ -124,6 +163,10 @@ impl Call {
             self.input.u32(quantum.to_bits());
             self.input.u64(quantize_f32(value, quantum) as u64);
             self.input_len += 1;
+            self.push_value(
+                "IF32Q",
+                format_args!("{:08x}/{}", quantum.to_bits(), quantize_f32(value, quantum)),
+            );
         }
     }
 
@@ -134,6 +177,12 @@ impl Call {
             self.input.u64(bytes.len() as u64);
             self.input.bytes(bytes);
             self.input_len += bytes.len() as u64;
+            let mut hash = Fnv64::new();
+            hash.bytes(bytes);
+            self.push_value(
+                "IBYTES",
+                format_args!("{}:{:016x}", bytes.len(), hash.finish()),
+            );
         }
     }
 
@@ -147,11 +196,23 @@ impl Call {
     }
 
     #[inline]
+    pub fn input_field<T: TraceHash + ?Sized>(&mut self, field: &'static str, value: &T) {
+        if self.active {
+            self.input.u8(b'G');
+            self.input.str(field);
+            value.trace_hash(&mut self.input);
+            self.input_len += 1;
+            self.push_value("IFIELD", field);
+        }
+    }
+
+    #[inline]
     pub fn output_u64(&mut self, value: u64) {
         if self.active {
             self.output.u8(b'U');
             self.output.u64(value);
             self.output_len += 1;
+            self.push_value("OU64", value);
         }
     }
 
@@ -166,6 +227,10 @@ impl Call {
             self.output.u8(b'F');
             self.output.u32(value.to_bits());
             self.output_len += 1;
+            self.push_value(
+                "OF32",
+                format_args!("{:08x}/{:.9e}", value.to_bits(), value),
+            );
         }
     }
 
@@ -176,6 +241,10 @@ impl Call {
             self.output.u32(quantum.to_bits());
             self.output.u64(quantize_f32(value, quantum) as u64);
             self.output_len += 1;
+            self.push_value(
+                "OF32Q",
+                format_args!("{:08x}/{}", quantum.to_bits(), quantize_f32(value, quantum)),
+            );
         }
     }
 
@@ -189,6 +258,17 @@ impl Call {
     }
 
     #[inline]
+    pub fn output_field<T: TraceHash + ?Sized>(&mut self, field: &'static str, value: &T) {
+        if self.active {
+            self.output.u8(b'G');
+            self.output.str(field);
+            value.trace_hash(&mut self.output);
+            self.output_len += 1;
+            self.push_value("OFIELD", field);
+        }
+    }
+
+    #[inline]
     pub fn finish(self) {
         if !self.active {
             return;
@@ -196,8 +276,8 @@ impl Call {
         let elapsed_ns = self.start.elapsed().as_nanos();
         let seq = SEQ.fetch_add(1, Ordering::Relaxed);
         let thread_id = thread_hash();
-        let row = format!(
-            "{}\t{}\t{}\t{}\t{}\t{:016x}\t{:016x}\t{}\t{}\t{}\t{}\t{}\n",
+        let mut row = format!(
+            "{}\t{}\t{}\t{}\t{}\t{:016x}\t{:016x}\t{}\t{}\t{}\t{}\t{}",
             "{run_id}",
             "{side}",
             thread_id,
@@ -211,6 +291,11 @@ impl Call {
             self.file,
             self.line
         );
+        if let Some(values) = self.values {
+            row.push('\t');
+            row.push_str(&values);
+        }
+        row.push('\n');
         if let Ok(mut guard) = writer().lock() {
             if let Some(writer) = guard.as_mut() {
                 let row = row
@@ -349,7 +434,12 @@ fn quantize_f32(value: f32, quantum: f32) -> i64 {
     } else if value == f32::NEG_INFINITY {
         i64::MIN + 1
     } else if quantum > 0.0 {
-        (value / quantum).round() as i64
+        let scaled = value / quantum;
+        if scaled >= 0.0 {
+            (scaled + 0.5) as i64
+        } else {
+            (scaled - 0.5) as i64
+        }
     } else {
         value.to_bits() as i64
     }
