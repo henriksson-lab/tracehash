@@ -17,8 +17,6 @@ The idea behind this code is simple: If we logged all inputs and outputs, this w
 log the small hashes of inputs and outputs. If they differ, LLM can focus its attention on the most likely source of the problem.
 
 
-**This crate is heavily work-in-progress**
-
 ## How to use
 
 Simply ask your LLM of choice to look at this Github repository and suggest to use it for tracking problems. This appears enough
