@@ -486,20 +486,111 @@ Good examples of identity fields:
 - RNG seed/state.
 - Algorithm mode flags.
 
+## Deep Mode: Full Structured Capture
+
+Hash mode is cheap but opaque — a mismatch tells you *which* function diverged
+for *which* canonical input, but not what the inputs/outputs actually were.
+Deep mode captures the full structured `Value` for every input and output
+into a per-function `.dclog` file, and ships a Rust-side replay harness that
+lets you feed the recorded inputs into a ported function and structurally
+diff the outputs.
+
+Deep mode uses the same instrumentation points as hash mode. Positional
+calls (`th.input_u64(x)`) still work — in deep mode they get auto-named
+`in0`, `in1`, …. The new `_as` helpers attach an explicit field name
+without changing the FNV hash stream, so existing `.tsv` comparisons stay
+byte-compatible:
+
+```rust
+let mut th = tracehash::th_call!("pipeline_decision");
+th.input_u64_as("seq_len", seq_len);
+th.input_f32_as("score", score);
+th.output_bool_as("passed", passed);
+th.finish();
+```
+
+```c
+TH_CALL("pipeline_decision");
+TH_IN_U64_AS("seq_len",  seq_len);
+TH_IN_F32_AS("score",    score);
+TH_OUT_BOOL_AS("passed", passed);
+TH_FINISH();
+```
+
+Enable deep mode on the Rust side with the `deep` cargo feature, then point
+`TRACEHASH_DEEP_DIR` at a directory. Both sides can emit hash TSV and dclog
+files simultaneously — the TSV gains a new `deep_seq` column that points at
+the matching dclog entry, so you can jump from a hash-level mismatch straight
+to the structured values:
+
+```toml
+[dependencies]
+tracehash-rs = { version = "0.1", features = ["deep"], optional = true }
+```
+
+```sh
+TRACEHASH_OUT=runs/rust.tsv TRACEHASH_SIDE=rust \
+TRACEHASH_DEEP_DIR=runs/rust.deep TRACEHASH_DEEP_MODE=all \
+  target/release/my-rust-port args...
+
+TRACEHASH_OUT=runs/c.tsv TRACEHASH_SIDE=c \
+TRACEHASH_DEEP_DIR=runs/c.deep TRACEHASH_DEEP_MODE=all \
+  ./my-c-program args...
+```
+
+Replay the C-recorded inputs against the Rust port:
+
+```rust
+tracehash::deep::replay_assert(
+    "runs/c.deep/pipeline_decision.dclog",
+    |view| {
+        let seq_len: u64 = view.input("seq_len")?.as_u64()?;
+        let score:   f32 = view.input("score")?.as_f32()?;
+        let expected: bool = view.output("passed")?.as_bool()?;
+
+        let actual = my_rust_port::pipeline_decision(seq_len, score);
+        let mut diff = tracehash::deep::Diff::new();
+        if actual != expected {
+            diff.push("passed", format!("expected {expected}, got {actual}"));
+        }
+        Ok(diff)
+    },
+);
+```
+
+Deep-mode env vars:
+
+- `TRACEHASH_DEEP_DIR` — activates deep capture; one `.dclog` per function.
+- `TRACEHASH_DEEP_MODE` — `first:N` (default `first:100`), `firstlast:N`,
+  `prob:P[:first=N][:last=0|1]`, or `all`. C side currently supports
+  `first:N` and `all`.
+- `TRACEHASH_DEEP_SEED` — seed for the probabilistic sampler (Rust only).
+- `TRACEHASH_COMPRESS` — zstd level 0..22 (Rust only, default 0). The Rust
+  reader auto-detects raw vs. compressed dclog.
+- `TRACEHASH_DEEP_ONLY` — Rust-only allowlist of function names.
+
+The wire format is byte-compatible with the deep-comparator crate's `.dclog`
+files. Deep-comparator is being deprecated in favor of this functionality.
+
 ## Current Limitations
 
-- Storage is TSV, not SQLite.
+- Hash-mode storage is TSV, not SQLite. Deep-mode storage is the binary
+  dclog format (optionally zstd-compressed).
 - Hashing uses FNV-1a 64-bit for simplicity; this is not cryptographic.
 - Float hashes are raw-bit hashes only. Tiny numeric drift appears as a mismatch.
   Quantized float helpers are available for tolerance-oriented probes, but they
   should not replace raw float probes when bitwise parity is the goal.
-- There is no runtime probe filter yet; probes are controlled by build flags and
-  whether `TRACEHASH_OUT` is set.
 - The C macro currently uses a fixed local variable name; repeated probes in one
   C block need explicit scopes.
 - Thread order is not globally stable. The comparator does not compare global
   row order; its occurrence-level report is intended for deterministic single
   thread runs or for probes whose same-input occurrence order is meaningful.
+- Deep mode currently captures value-copy snapshots only — pointer-identity
+  aliasing (`Shared`/`Ref`/`Weak`), exception outcomes, and schema-aware struct
+  entries from deep-comparator are not yet wired through the probe API, though
+  the wire format already supports them.
+- C-side deep mode supports `first:N` and `all` sampling only; `firstlast` and
+  `prob` policies fall back to the default.
 
 ## Release Roadmap
 

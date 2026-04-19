@@ -171,11 +171,25 @@ fn read_rows(path: &str) -> std::io::Result<Vec<Row>> {
         if cols.len() < 12 {
             continue;
         }
+        let values = match cols.len() {
+            12 => None,
+            13 => {
+                // Could be old-format `values` column, or new-format
+                // `deep_seq` column. `deep_seq` is "-" or decimal digits.
+                let last = cols[12];
+                if last == "-" || (!last.is_empty() && last.bytes().all(|b| b.is_ascii_digit())) {
+                    None
+                } else {
+                    Some(last.to_string())
+                }
+            }
+            _ => cols.get(13).map(|s| s.to_string()),
+        };
         rows.push(Row {
             function: cols[4].to_string(),
             input_hash: cols[5].to_string(),
             output_hash: cols[6].to_string(),
-            values: cols.get(12).map(|s| s.to_string()),
+            values,
         });
     }
     Ok(rows)

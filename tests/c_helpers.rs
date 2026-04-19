@@ -206,17 +206,18 @@ int main(void) {
     let trace = fs::read_to_string(&trace_path).unwrap();
     let row = trace.lines().next().expect("C value trace row");
     let cols: Vec<_> = row.split('\t').collect();
-    assert_eq!(cols.len(), 13, "expected debug value column: {row}");
-    assert!(cols[12].contains("IU64=42"), "missing input value: {row}");
+    assert_eq!(cols.len(), 14, "expected debug value column: {row}");
+    assert_eq!(cols[12], "-", "deep_seq should be '-' when deep mode off: {row}");
+    assert!(cols[13].contains("IU64=42"), "missing input value: {row}");
     assert!(
-        cols[12].contains("IBYTES=3:"),
+        cols[13].contains("IBYTES=3:"),
         "missing byte summary: {row}"
     );
     assert!(
-        cols[12].contains("OF32=41480000/"),
+        cols[13].contains("OF32=41480000/"),
         "missing float value: {row}"
     );
-    assert!(cols[12].contains("OU64=7"), "missing output value: {row}");
+    assert!(cols[13].contains("OU64=7"), "missing output value: {row}");
 }
 
 #[test]
@@ -293,12 +294,13 @@ int main(void) {
 
     assert_eq!(cols[5], format!("{:016x}", input.finish()));
     assert_eq!(cols[6], format!("{:016x}", output.finish()));
+    assert_eq!(cols[12], "-", "deep_seq should be '-' when deep mode off: {row}");
     assert!(
-        cols[12].contains("IFIELD=seq_len"),
+        cols[13].contains("IFIELD=seq_len"),
         "missing field value: {row}"
     );
     assert!(
-        cols[12].contains("OFIELD=delta"),
+        cols[13].contains("OFIELD=delta"),
         "missing field value: {row}"
     );
 }

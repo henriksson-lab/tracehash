@@ -1,7 +1,14 @@
-//! Cross-language function call tracing by canonical input/output hashes.
+//! Cross-language function call tracing by canonical input/output hashes,
+//! with optional full-fidelity deep-log capture.
 //!
-//! Set `TRACEHASH_OUT=/path/to/run.tsv` to enable recording. Optional
-//! `TRACEHASH_SIDE` and `TRACEHASH_RUN_ID` values are copied into each row.
+//! Set `TRACEHASH_OUT=/path/to/run.tsv` to enable the hash-only TSV stream.
+//! Optional `TRACEHASH_SIDE` and `TRACEHASH_RUN_ID` values are copied into
+//! each row.
+//!
+//! When the `deep` feature is enabled and `TRACEHASH_DEEP_DIR=<dir>` is set,
+//! every probe additionally emits a structured entry into a per-function
+//! `.dclog` file. The TSV row's `deep_seq` column points at the matching
+//! dclog entry (or `-` when not recorded).
 
 use std::fmt::Write as _;
 use std::fs::File;
@@ -12,9 +19,17 @@ use std::time::Instant;
 
 mod stable_hash;
 
+#[cfg(feature = "deep")]
+pub mod deep;
+#[cfg(feature = "deep")]
+pub mod spec;
+
 pub use stable_hash::Fnv64;
 #[cfg(feature = "derive")]
 pub use tracehash_rs_derive::TraceHash;
+
+#[cfg(feature = "deep")]
+pub use spec::{Outcome, Value};
 
 static WRITER: OnceLock<Mutex<Option<TraceWriter>>> = OnceLock::new();
 static SEQ: AtomicU64 = AtomicU64::new(0);
@@ -49,6 +64,21 @@ fn writer() -> &'static Mutex<Option<TraceWriter>> {
 
 #[must_use]
 pub fn enabled() -> bool {
+    let tsv = writer()
+        .lock()
+        .map(|guard| guard.is_some())
+        .unwrap_or(false);
+    #[cfg(feature = "deep")]
+    {
+        tsv || deep::enabled()
+    }
+    #[cfg(not(feature = "deep"))]
+    {
+        tsv
+    }
+}
+
+fn tsv_enabled() -> bool {
     writer()
         .lock()
         .map(|guard| guard.is_some())
@@ -73,12 +103,29 @@ pub struct Call {
     start: Instant,
     active: bool,
     values: Option<String>,
+
+    #[cfg(feature = "deep")]
+    deep_active: bool,
+    #[cfg(feature = "deep")]
+    deep_inputs: Vec<(String, Value)>,
+    #[cfg(feature = "deep")]
+    deep_outputs: Vec<(String, Value)>,
+    #[cfg(feature = "deep")]
+    input_counter: u32,
+    #[cfg(feature = "deep")]
+    output_counter: u32,
 }
 
 impl Call {
     #[inline]
     pub fn new(function: &'static str, file: &'static str, line: u32) -> Self {
-        let active = enabled();
+        let tsv = tsv_enabled();
+        #[cfg(feature = "deep")]
+        let deep_active = deep::enabled();
+        #[cfg(not(feature = "deep"))]
+        let deep_active = false;
+        let active = tsv || deep_active;
+
         let mut input = Fnv64::new();
         let mut output = Fnv64::new();
         if active {
@@ -95,11 +142,21 @@ impl Call {
             output_len: 0,
             start: Instant::now(),
             active,
-            values: if active && values_enabled() {
+            values: if tsv && values_enabled() {
                 Some(String::new())
             } else {
                 None
             },
+            #[cfg(feature = "deep")]
+            deep_active,
+            #[cfg(feature = "deep")]
+            deep_inputs: Vec::new(),
+            #[cfg(feature = "deep")]
+            deep_outputs: Vec::new(),
+            #[cfg(feature = "deep")]
+            input_counter: 0,
+            #[cfg(feature = "deep")]
+            output_counter: 0,
         }
     }
 
@@ -113,6 +170,40 @@ impl Call {
         }
     }
 
+    #[cfg(feature = "deep")]
+    #[inline]
+    fn auto_in_name(&mut self) -> String {
+        let name = format!("in{}", self.input_counter);
+        self.input_counter += 1;
+        name
+    }
+
+    #[cfg(feature = "deep")]
+    #[inline]
+    fn auto_out_name(&mut self) -> String {
+        let name = format!("out{}", self.output_counter);
+        self.output_counter += 1;
+        name
+    }
+
+    #[cfg(feature = "deep")]
+    #[inline]
+    fn deep_push_input(&mut self, name: String, value: Value) {
+        if self.deep_active {
+            self.deep_inputs.push((name, value));
+        }
+    }
+
+    #[cfg(feature = "deep")]
+    #[inline]
+    fn deep_push_output(&mut self, name: String, value: Value) {
+        if self.deep_active {
+            self.deep_outputs.push((name, value));
+        }
+    }
+
+    // -- inputs ---------------------------------------------------------------
+
     #[inline]
     pub fn input_u64(&mut self, value: u64) {
         if self.active {
@@ -120,12 +211,27 @@ impl Call {
             self.input.u64(value);
             self.input_len += 1;
             self.push_value("IU64", value);
+            #[cfg(feature = "deep")]
+            {
+                let name = self.auto_in_name();
+                self.deep_push_input(name, Value::U64(value));
+            }
         }
     }
 
     #[inline]
     pub fn input_i64(&mut self, value: i64) {
-        self.input_u64(value as u64);
+        if self.active {
+            self.input.u8(b'U');
+            self.input.u64(value as u64);
+            self.input_len += 1;
+            self.push_value("IU64", value as u64);
+            #[cfg(feature = "deep")]
+            {
+                let name = self.auto_in_name();
+                self.deep_push_input(name, Value::I64(value));
+            }
+        }
     }
 
     #[inline]
@@ -140,6 +246,11 @@ impl Call {
             self.input.u8(value as u8);
             self.input_len += 1;
             self.push_value("IBOOL", value as u8);
+            #[cfg(feature = "deep")]
+            {
+                let name = self.auto_in_name();
+                self.deep_push_input(name, Value::Bool(value));
+            }
         }
     }
 
@@ -153,6 +264,29 @@ impl Call {
                 "IF32",
                 format_args!("{:08x}/{:.9e}", value.to_bits(), value),
             );
+            #[cfg(feature = "deep")]
+            {
+                let name = self.auto_in_name();
+                self.deep_push_input(name, Value::F32(value));
+            }
+        }
+    }
+
+    #[inline]
+    pub fn input_f64(&mut self, value: f64) {
+        if self.active {
+            self.input.u8(b'D');
+            self.input.u64(value.to_bits());
+            self.input_len += 1;
+            self.push_value(
+                "IF64",
+                format_args!("{:016x}/{:.17e}", value.to_bits(), value),
+            );
+            #[cfg(feature = "deep")]
+            {
+                let name = self.auto_in_name();
+                self.deep_push_input(name, Value::F64(value));
+            }
         }
     }
 
@@ -167,6 +301,11 @@ impl Call {
                 "IF32Q",
                 format_args!("{:08x}/{}", quantum.to_bits(), quantize_f32(value, quantum)),
             );
+            #[cfg(feature = "deep")]
+            {
+                let name = self.auto_in_name();
+                self.deep_push_input(name, Value::F32(value));
+            }
         }
     }
 
@@ -183,6 +322,11 @@ impl Call {
                 "IBYTES",
                 format_args!("{}:{:016x}", bytes.len(), hash.finish()),
             );
+            #[cfg(feature = "deep")]
+            {
+                let name = self.auto_in_name();
+                self.deep_push_input(name, Value::Bytes(bytes.to_vec()));
+            }
         }
     }
 
@@ -206,6 +350,115 @@ impl Call {
         }
     }
 
+    // -- `_as` named inputs: hash-identical to positional, name flows only
+    // to the deep log. Use these when you want the dclog entry to carry
+    // a meaningful field name without changing the hash stream.
+
+    #[cfg(feature = "deep")]
+    #[inline]
+    pub fn input_u64_as(&mut self, name: &str, value: u64) {
+        if self.active {
+            self.input.u8(b'U');
+            self.input.u64(value);
+            self.input_len += 1;
+            self.push_value("IU64", value);
+            self.input_counter += 1;
+            self.deep_push_input(name.to_string(), Value::U64(value));
+        }
+    }
+
+    #[cfg(feature = "deep")]
+    #[inline]
+    pub fn input_i64_as(&mut self, name: &str, value: i64) {
+        if self.active {
+            self.input.u8(b'U');
+            self.input.u64(value as u64);
+            self.input_len += 1;
+            self.push_value("IU64", value as u64);
+            self.input_counter += 1;
+            self.deep_push_input(name.to_string(), Value::I64(value));
+        }
+    }
+
+    #[cfg(feature = "deep")]
+    #[inline]
+    pub fn input_usize_as(&mut self, name: &str, value: usize) {
+        if self.active {
+            self.input.u8(b'U');
+            self.input.u64(value as u64);
+            self.input_len += 1;
+            self.push_value("IU64", value as u64);
+            self.input_counter += 1;
+            self.deep_push_input(name.to_string(), Value::U64(value as u64));
+        }
+    }
+
+    #[cfg(feature = "deep")]
+    #[inline]
+    pub fn input_bool_as(&mut self, name: &str, value: bool) {
+        if self.active {
+            self.input.u8(b'B');
+            self.input.u8(value as u8);
+            self.input_len += 1;
+            self.push_value("IBOOL", value as u8);
+            self.input_counter += 1;
+            self.deep_push_input(name.to_string(), Value::Bool(value));
+        }
+    }
+
+    #[cfg(feature = "deep")]
+    #[inline]
+    pub fn input_f32_as(&mut self, name: &str, value: f32) {
+        if self.active {
+            self.input.u8(b'F');
+            self.input.u32(value.to_bits());
+            self.input_len += 1;
+            self.push_value(
+                "IF32",
+                format_args!("{:08x}/{:.9e}", value.to_bits(), value),
+            );
+            self.input_counter += 1;
+            self.deep_push_input(name.to_string(), Value::F32(value));
+        }
+    }
+
+    #[cfg(feature = "deep")]
+    #[inline]
+    pub fn input_f64_as(&mut self, name: &str, value: f64) {
+        if self.active {
+            self.input.u8(b'D');
+            self.input.u64(value.to_bits());
+            self.input_len += 1;
+            self.push_value(
+                "IF64",
+                format_args!("{:016x}/{:.17e}", value.to_bits(), value),
+            );
+            self.input_counter += 1;
+            self.deep_push_input(name.to_string(), Value::F64(value));
+        }
+    }
+
+    #[cfg(feature = "deep")]
+    #[inline]
+    pub fn input_bytes_as(&mut self, name: &str, bytes: &[u8]) {
+        if self.active {
+            self.input.u8(b'Y');
+            self.input.u64(bytes.len() as u64);
+            self.input.bytes(bytes);
+            self.input_len += bytes.len() as u64;
+            let mut hash = Fnv64::new();
+            hash.bytes(bytes);
+            self.push_value(
+                "IBYTES",
+                format_args!("{}:{:016x}", bytes.len(), hash.finish()),
+            );
+            self.input_counter += 1;
+            self.deep_push_input(name.to_string(), Value::Bytes(bytes.to_vec()));
+        }
+    }
+
+    // -- outputs --------------------------------------------------------------
+
     #[inline]
     pub fn output_u64(&mut self, value: u64) {
         if self.active {
@@ -213,12 +466,42 @@ impl Call {
             self.output.u64(value);
             self.output_len += 1;
             self.push_value("OU64", value);
+            #[cfg(feature = "deep")]
+            {
+                let name = self.auto_out_name();
+                self.deep_push_output(name, Value::U64(value));
+            }
         }
     }
 
     #[inline]
     pub fn output_i64(&mut self, value: i64) {
-        self.output_u64(value as u64);
+        if self.active {
+            self.output.u8(b'U');
+            self.output.u64(value as u64);
+            self.output_len += 1;
+            self.push_value("OU64", value as u64);
+            #[cfg(feature = "deep")]
+            {
+                let name = self.auto_out_name();
+                self.deep_push_output(name, Value::I64(value));
+            }
+        }
+    }
+
+    #[inline]
+    pub fn output_bool(&mut self, value: bool) {
+        if self.active {
+            self.output.u8(b'B');
+            self.output.u8(value as u8);
+            self.output_len += 1;
+            self.push_value("OBOOL", value as u8);
+            #[cfg(feature = "deep")]
+            {
+                let name = self.auto_out_name();
+                self.deep_push_output(name, Value::Bool(value));
+            }
+        }
     }
 
     #[inline]
@@ -231,6 +514,29 @@ impl Call {
                 "OF32",
                 format_args!("{:08x}/{:.9e}", value.to_bits(), value),
             );
+            #[cfg(feature = "deep")]
+            {
+                let name = self.auto_out_name();
+                self.deep_push_output(name, Value::F32(value));
+            }
+        }
+    }
+
+    #[inline]
+    pub fn output_f64(&mut self, value: f64) {
+        if self.active {
+            self.output.u8(b'D');
+            self.output.u64(value.to_bits());
+            self.output_len += 1;
+            self.push_value(
+                "OF64",
+                format_args!("{:016x}/{:.17e}", value.to_bits(), value),
+            );
+            #[cfg(feature = "deep")]
+            {
+                let name = self.auto_out_name();
+                self.deep_push_output(name, Value::F64(value));
+            }
         }
     }
 
@@ -245,6 +551,32 @@ impl Call {
                 "OF32Q",
                 format_args!("{:08x}/{}", quantum.to_bits(), quantize_f32(value, quantum)),
             );
+            #[cfg(feature = "deep")]
+            {
+                let name = self.auto_out_name();
+                self.deep_push_output(name, Value::F32(value));
+            }
+        }
+    }
+
+    #[inline]
+    pub fn output_bytes(&mut self, bytes: &[u8]) {
+        if self.active {
+            self.output.u8(b'Y');
+            self.output.u64(bytes.len() as u64);
+            self.output.bytes(bytes);
+            self.output_len += bytes.len() as u64;
+            let mut hash = Fnv64::new();
+            hash.bytes(bytes);
+            self.push_value(
+                "OBYTES",
+                format_args!("{}:{:016x}", bytes.len(), hash.finish()),
+            );
+            #[cfg(feature = "deep")]
+            {
+                let name = self.auto_out_name();
+                self.deep_push_output(name, Value::Bytes(bytes.to_vec()));
+            }
         }
     }
 
@@ -268,6 +600,111 @@ impl Call {
         }
     }
 
+    // -- `_as` named outputs --------------------------------------------------
+
+    #[cfg(feature = "deep")]
+    #[inline]
+    pub fn output_u64_as(&mut self, name: &str, value: u64) {
+        if self.active {
+            self.output.u8(b'U');
+            self.output.u64(value);
+            self.output_len += 1;
+            self.push_value("OU64", value);
+            self.output_counter += 1;
+            self.deep_push_output(name.to_string(), Value::U64(value));
+        }
+    }
+
+    #[cfg(feature = "deep")]
+    #[inline]
+    pub fn output_i64_as(&mut self, name: &str, value: i64) {
+        if self.active {
+            self.output.u8(b'U');
+            self.output.u64(value as u64);
+            self.output_len += 1;
+            self.push_value("OU64", value as u64);
+            self.output_counter += 1;
+            self.deep_push_output(name.to_string(), Value::I64(value));
+        }
+    }
+
+    #[cfg(feature = "deep")]
+    #[inline]
+    pub fn output_bool_as(&mut self, name: &str, value: bool) {
+        if self.active {
+            self.output.u8(b'B');
+            self.output.u8(value as u8);
+            self.output_len += 1;
+            self.push_value("OBOOL", value as u8);
+            self.output_counter += 1;
+            self.deep_push_output(name.to_string(), Value::Bool(value));
+        }
+    }
+
+    #[cfg(feature = "deep")]
+    #[inline]
+    pub fn output_f32_as(&mut self, name: &str, value: f32) {
+        if self.active {
+            self.output.u8(b'F');
+            self.output.u32(value.to_bits());
+            self.output_len += 1;
+            self.push_value(
+                "OF32",
+                format_args!("{:08x}/{:.9e}", value.to_bits(), value),
+            );
+            self.output_counter += 1;
+            self.deep_push_output(name.to_string(), Value::F32(value));
+        }
+    }
+
+    #[cfg(feature = "deep")]
+    #[inline]
+    pub fn output_f64_as(&mut self, name: &str, value: f64) {
+        if self.active {
+            self.output.u8(b'D');
+            self.output.u64(value.to_bits());
+            self.output_len += 1;
+            self.push_value(
+                "OF64",
+                format_args!("{:016x}/{:.17e}", value.to_bits(), value),
+            );
+            self.output_counter += 1;
+            self.deep_push_output(name.to_string(), Value::F64(value));
+        }
+    }
+
+    #[cfg(feature = "deep")]
+    #[inline]
+    pub fn output_bytes_as(&mut self, name: &str, bytes: &[u8]) {
+        if self.active {
+            self.output.u8(b'Y');
+            self.output.u64(bytes.len() as u64);
+            self.output.bytes(bytes);
+            self.output_len += bytes.len() as u64;
+            let mut hash = Fnv64::new();
+            hash.bytes(bytes);
+            self.push_value(
+                "OBYTES",
+                format_args!("{}:{:016x}", bytes.len(), hash.finish()),
+            );
+            self.output_counter += 1;
+            self.deep_push_output(name.to_string(), Value::Bytes(bytes.to_vec()));
+        }
+    }
+
+    /// Current running FNV hash over the input stream. Does not consume
+    /// the call. Useful in tests.
+    #[inline]
+    pub fn current_input_hash(&self) -> u64 {
+        self.input.finish()
+    }
+
+    /// Current running FNV hash over the output stream.
+    #[inline]
+    pub fn current_output_hash(&self) -> u64 {
+        self.output.finish()
+    }
+
     #[inline]
     pub fn finish(self) {
         if !self.active {
@@ -276,8 +713,23 @@ impl Call {
         let elapsed_ns = self.start.elapsed().as_nanos();
         let seq = SEQ.fetch_add(1, Ordering::Relaxed);
         let thread_id = thread_hash();
+
+        #[cfg(feature = "deep")]
+        let deep_seq = if self.deep_active {
+            deep::record(self.function, self.deep_inputs, self.deep_outputs)
+        } else {
+            None
+        };
+        #[cfg(not(feature = "deep"))]
+        let deep_seq: Option<u32> = None;
+
+        let deep_seq_field = match deep_seq {
+            Some(n) => n.to_string(),
+            None => "-".to_string(),
+        };
+
         let mut row = format!(
-            "{}\t{}\t{}\t{}\t{}\t{:016x}\t{:016x}\t{}\t{}\t{}\t{}\t{}",
+            "{}\t{}\t{}\t{}\t{}\t{:016x}\t{:016x}\t{}\t{}\t{}\t{}\t{}\t{}",
             "{run_id}",
             "{side}",
             thread_id,
@@ -289,7 +741,8 @@ impl Call {
             self.output_len,
             elapsed_ns,
             self.file,
-            self.line
+            self.line,
+            deep_seq_field,
         );
         if let Some(values) = self.values {
             row.push('\t');

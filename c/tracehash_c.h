@@ -22,6 +22,20 @@ typedef struct TraceHashCall {
   size_t values_cap;
   int values_enabled;
   int active;
+  /* Deep-log capture: byte buffers holding the pre-encoded dclog Value
+   * stream for inputs/outputs on this call. Populated by the positional
+   * (auto-named) and `_as` (explicitly-named) helpers. Allocated lazily. */
+  int deep_active;
+  uint8_t *deep_in_buf;
+  size_t deep_in_len;
+  size_t deep_in_cap;
+  uint32_t deep_in_count;
+  uint32_t input_counter;
+  uint8_t *deep_out_buf;
+  size_t deep_out_len;
+  size_t deep_out_cap;
+  uint32_t deep_out_count;
+  uint32_t output_counter;
 } TraceHashCall;
 
 TraceHashCall tracehash_begin(const char *function, const char *file, int line);
@@ -64,6 +78,28 @@ void tracehash_output_struct_field_f32(TraceHashCall *call, const char *field, f
 void tracehash_output_struct_field_f64(TraceHashCall *call, const char *field, double value);
 void tracehash_output_struct_field_bytes(TraceHashCall *call, const char *field, const void *ptr, size_t len);
 void tracehash_finish(TraceHashCall *call);
+
+/* Named-field (`_as`) helpers: produce the same hash bytes as the positional
+ * helpers (the name does NOT enter the FNV hash stream), but attach `name`
+ * to the matching dclog entry in deep-mode capture. */
+void tracehash_input_u64_as   (TraceHashCall *call, const char *name, uint64_t value);
+void tracehash_input_i64_as   (TraceHashCall *call, const char *name, int64_t value);
+void tracehash_input_bool_as  (TraceHashCall *call, const char *name, int value);
+void tracehash_input_f32_as   (TraceHashCall *call, const char *name, float value);
+void tracehash_input_f64_as   (TraceHashCall *call, const char *name, double value);
+void tracehash_input_bytes_as (TraceHashCall *call, const char *name, const void *ptr, size_t len);
+void tracehash_output_u64_as  (TraceHashCall *call, const char *name, uint64_t value);
+void tracehash_output_i64_as  (TraceHashCall *call, const char *name, int64_t value);
+void tracehash_output_bool_as (TraceHashCall *call, const char *name, int value);
+void tracehash_output_f32_as  (TraceHashCall *call, const char *name, float value);
+void tracehash_output_f64_as  (TraceHashCall *call, const char *name, double value);
+void tracehash_output_bytes_as(TraceHashCall *call, const char *name, const void *ptr, size_t len);
+
+/* Flush any buffered "last" dclog entries and close per-function writers.
+ * Call before process exit when using `firstlast` or `prob` with keep-last.
+ * atexit() is not installed automatically — the Rust side also requires an
+ * explicit call, so this keeps the semantics symmetric. */
+void tracehash_deep_flush_all(void);
 
 #ifdef __cplusplus
 }
@@ -122,6 +158,32 @@ void tracehash_finish(TraceHashCall *call);
 #define TH_OUT_FIELD_F32(field, value) TH_OUT_FIELD_F32_TO(&th_call, field, value)
 #define TH_OUT_FIELD_F64(field, value) TH_OUT_FIELD_F64_TO(&th_call, field, value)
 #define TH_FINISH() TH_FINISH_TO(&th_call)
+
+#define TH_IN_U64_AS_TO(call, name, value)   tracehash_input_u64_as((call), (name), (uint64_t)(value))
+#define TH_IN_I64_AS_TO(call, name, value)   tracehash_input_i64_as((call), (name), (int64_t)(value))
+#define TH_IN_BOOL_AS_TO(call, name, value)  tracehash_input_bool_as((call), (name), (value))
+#define TH_IN_F32_AS_TO(call, name, value)   tracehash_input_f32_as((call), (name), (float)(value))
+#define TH_IN_F64_AS_TO(call, name, value)   tracehash_input_f64_as((call), (name), (double)(value))
+#define TH_IN_BYTES_AS_TO(call, name, ptr, len) tracehash_input_bytes_as((call), (name), (ptr), (len))
+#define TH_OUT_U64_AS_TO(call, name, value)  tracehash_output_u64_as((call), (name), (uint64_t)(value))
+#define TH_OUT_I64_AS_TO(call, name, value)  tracehash_output_i64_as((call), (name), (int64_t)(value))
+#define TH_OUT_BOOL_AS_TO(call, name, value) tracehash_output_bool_as((call), (name), (value))
+#define TH_OUT_F32_AS_TO(call, name, value)  tracehash_output_f32_as((call), (name), (float)(value))
+#define TH_OUT_F64_AS_TO(call, name, value)  tracehash_output_f64_as((call), (name), (double)(value))
+#define TH_OUT_BYTES_AS_TO(call, name, ptr, len) tracehash_output_bytes_as((call), (name), (ptr), (len))
+
+#define TH_IN_U64_AS(name, value)    TH_IN_U64_AS_TO(&th_call, name, value)
+#define TH_IN_I64_AS(name, value)    TH_IN_I64_AS_TO(&th_call, name, value)
+#define TH_IN_BOOL_AS(name, value)   TH_IN_BOOL_AS_TO(&th_call, name, value)
+#define TH_IN_F32_AS(name, value)    TH_IN_F32_AS_TO(&th_call, name, value)
+#define TH_IN_F64_AS(name, value)    TH_IN_F64_AS_TO(&th_call, name, value)
+#define TH_IN_BYTES_AS(name, ptr, len) TH_IN_BYTES_AS_TO(&th_call, name, ptr, len)
+#define TH_OUT_U64_AS(name, value)   TH_OUT_U64_AS_TO(&th_call, name, value)
+#define TH_OUT_I64_AS(name, value)   TH_OUT_I64_AS_TO(&th_call, name, value)
+#define TH_OUT_BOOL_AS(name, value)  TH_OUT_BOOL_AS_TO(&th_call, name, value)
+#define TH_OUT_F32_AS(name, value)   TH_OUT_F32_AS_TO(&th_call, name, value)
+#define TH_OUT_F64_AS(name, value)   TH_OUT_F64_AS_TO(&th_call, name, value)
+#define TH_OUT_BYTES_AS(name, ptr, len) TH_OUT_BYTES_AS_TO(&th_call, name, ptr, len)
 
 #define TH_FIELD_IN_U64(call, value, field) tracehash_input_struct_field_u64((call), #field, (uint64_t)((value)->field));
 #define TH_FIELD_IN_I64(call, value, field) tracehash_input_struct_field_i64((call), #field, (int64_t)((value)->field));

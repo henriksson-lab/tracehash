@@ -21,6 +21,7 @@ include = [
 [features]
 default = ["derive"]
 derive = ["dep:tracehash-rs-derive"]
+deep = ["dep:serde", "dep:serde_json", "dep:thiserror", "dep:rand", "dep:zstd"]
 
 [lib]
 name = "tracehash"
@@ -32,3 +33,8 @@ path = "src/bin/tracehash-compare.rs"
 
 [dependencies]
 tracehash-rs-derive = { version = "0.1.0", path = "tracehash-rs-derive", optional = true }
+serde = { version = "1", features = ["derive"], optional = true }
+serde_json = { version = "1", optional = true }
+thiserror = { version = "1", optional = true }
+rand = { version = "0.8", optional = true }
+zstd = { version = "0.13", optional = true }
