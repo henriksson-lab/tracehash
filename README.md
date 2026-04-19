@@ -1,9 +1,12 @@
 # tracehash - support for faithful translation of code
 
-`tracehash` is a small cross-language tracing toolkit for algorithm parity
-debugging. It records function calls as stable hashes of canonicalized inputs
-and outputs, so two implementations can be compared without storing large or
-sensitive payloads.
+`tracehash` is a small cross-language tracing toolkit for algorithm parity debugging. It records inputs and outputs of function calls
+such that two implementations can be compared.
+
+* In the first light pass, only hashes of inputs and outputs are stored, saving space and making comparison easy. If the output hash differs for a given input hash, this is a red flag
+* In the second heavy pass, the full input and output data can be stored for problematic functions, enabling reasoning about what is going wrong
+
+Previously a separate crate was used for deep comparison. But by merging them, the code need not be instrumented twice, making it easier to swap between the modes.
 
 The code has been used to successfully find bugs. While Claude/Codex can be surprisingly good at reasoning, the LLM
 is not yet at a point where it can be trusted for faithful translation. By comparing call frequency, and inputs vs outputs,
@@ -13,16 +16,10 @@ This software assumes that translation is performed function-by-function (as far
 It also assumes that functions are pure: one input gives one output. Other functions cannot be traced and writing such functions
 should generally be considered poor practice (untestable code).
 
-The idea behind this code is simple: If we logged all inputs and outputs, this would take too much space. Here, we simply
-log the small hashes of inputs and outputs. If they differ, LLM can focus its attention on the most likely source of the problem.
-
-
 ## How to use
 
-Simply ask your LLM of choice to look at this Github repository and suggest to use it for tracking problems. This appears enough
-
-In the future, this suite will be expanded for aggressive up-front instrumentation, along with transpilers that can translate as
-much code as possible, faithfully, function-by-function, with minimum LLM use.
+Simply ask your LLM of choice to look at this Github repository and suggest to use it for tracking problems. This appears sufficient
+to get it used.
 
 
 ## On the use of LLM and license

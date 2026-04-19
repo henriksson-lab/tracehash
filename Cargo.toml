@@ -1,6 +1,6 @@
 [package]
 name = "tracehash-rs"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 authors = ["Johan Henriksson <johan.henriksson@umu.se>"]
 description = "Cross-language call/input/output hash tracing for algorithm parity checks"
@@ -32,7 +32,7 @@ name = "tracehash-compare"
 path = "src/bin/tracehash-compare.rs"
 
 [dependencies]
-tracehash-rs-derive = { version = "0.1.0", path = "tracehash-rs-derive", optional = true }
+tracehash-rs-derive = { version = "0.2.0", path = "tracehash-rs-derive", optional = true }
 serde = { version = "1", features = ["derive"], optional = true }
 serde_json = { version = "1", optional = true }
 thiserror = { version = "1", optional = true }
